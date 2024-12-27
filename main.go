@@ -14,12 +14,12 @@ import (
 
 var (
 	mc          = memcache.New("127.0.0.1:11211")
-	rateLimiter = rate.NewLimiter(1, 5)  // 1 request per second, burst up to 5 requests
-	logQueue    = make(chan string, 100) // Log queue for asynchronous logging
-	MaxLogSize  = 1024                   // Max size for a single log entry (1 KB)
+	rateLimiter = rate.NewLimiter(1, 5)
+	logQueue    = make(chan string, 100)
+	MaxLogSize  = 1024
 )
 
-const MaxRequestSize int64 = 1024 * 10 // Max request size (10 KB)
+const MaxRequestSize int64 = 1024 * 10
 
 func transferLogsToETCD() {
 	for {
@@ -51,13 +51,12 @@ func transferLogsToETCD() {
 
 func XSSProtectionMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Rate limiting
+
 		if !rateLimiter.Allow() {
 			http.Error(w, "Too many requests", http.StatusTooManyRequests)
 			return
 		}
 
-		// Request size limit
 		if r.ContentLength > MaxRequestSize {
 			http.Error(w, "Request size too large", http.StatusRequestEntityTooLarge)
 			return
@@ -87,9 +86,54 @@ func XSSProtectionMiddleware(next http.Handler) http.Handler {
 
 func containsXSS(input string) bool {
 	potentialXSS := []string{
-		"<script", "onerror=", "onload=", "javascript:", "alert(", "eval(",
-		"data:text/html;base64,", "<iframe", "<img", "<svg", "<srcdoc", "prompt=",
+		// Common HTML and JavaScript tags and attributes
+		"<script", "</script", "<iframe", "</iframe", "<object", "</object",
+		"<embed", "</embed", "<applet", "</applet", "<svg", "</svg",
+		"<math", "</math", "<link", "<meta", "<style", "</style",
+		"<img", "<image", "<video", "<audio", "<body", "</body",
+		"<base", "<form", "<isindex", "<marquee", "<textarea",
+		"<xmp", "<plaintext", "<noscript", "<title",
+
+		// Common JavaScript event handlers
+		"onerror=", "onload=", "onclick=", "onmouseover=", "onfocus=",
+		"onblur=", "onresize=", "onunload=", "onbeforeunload=", "onmousemove=",
+		"onmouseout=", "onmousedown=", "onmouseup=", "onkeypress=", "onkeydown=",
+		"onkeyup=", "oncontextmenu=", "onsubmit=", "onreset=", "onchange=",
+		"ondblclick=", "onmouseenter=", "onmouseleave=", "onpaste=", "oncut=",
+		"oncopy=", "oninput=", "ontouchstart=", "ontouchmove=", "ontouchend=",
+
+		// Common JavaScript functions and patterns
+		"javascript:", "alert(", "eval(", "setTimeout(", "setInterval(",
+		"document.write(", "document.body.innerHTML", "window.location",
+		"window.open(", "innerHTML=", "outerHTML=", "location.href=",
+		"location.replace(", "exec(", "Function(", "prompt(", "confirm(",
+
+		// Base64 encoded payloads
+		"data:text/html;base64,", "data:application/javascript;base64,",
+
+		// Inline styles and dangerous CSS
+		"style=", "expression(", "url(javascript:", "@import",
+
+		// Encoded and obfuscated payloads
+		"%3Cscript", "%3Ciframe", "%3Cimg", "&#x3Cscript", "&#x3Ciframe",
+		"&#x3Cimg", "\\x3Cscript", "\\x3Ciframe", "\\x3Cimg",
+		"\\u003Cscript", "\\u003Ciframe", "\\u003Cimg",
+
+		// Other dangerous techniques
+		"srcdoc=", "src=", "href=", "action=", "formaction=",
+		"data=", "xmlns=", "xlink:href=", "base64,", "vbs:", "vbscript:",
+		"document.cookie", "window.name", "parent.location", "top.location",
+
+		// XSS-specific payload markers
+		"<!--", "-->", "<!", "!>", "</", "/>",
+		"\">", "'>", "\">", "'>", "`>", "\"`>",
+		"`> alert(", "`> prompt(", "`> confirm(",
+
+		// Other malicious payload markers
+		"<!--#", "--!>", "<!-->", "--->", "<![CDATA[", "]]>",
+		"<!--[if", "[if gte", "<!--[endif",
 	}
+
 	input = strings.ToLower(input)
 	for _, keyword := range potentialXSS {
 		if strings.Contains(input, keyword) {
@@ -129,15 +173,12 @@ func logXSSAttemptAsync(data string) {
 	}
 	select {
 	case logQueue <- data:
-		// Log added to queue
 	default:
-		// Queue is full, drop log
 		log.Println("Log queue full, dropping log:", data)
 	}
 }
 
 func main() {
-	// Start the log processor in a separate goroutine
 	go logProcessor()
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
